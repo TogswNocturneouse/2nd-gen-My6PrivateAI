@@ -1,0 +1,16 @@
+name: Convert and Build Models
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+      - name: Install dependencies
+        run: pip install torch
+      - name: Run conversion
+        run: python ci/quantize_and_convert.py
