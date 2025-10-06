@@ -1,0 +1,87 @@
+name: build-and-deploy
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: 'HuggingFace model ID or local path'
+        required: false
+jobs:
+  prepare-and-convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch transformers coremltools huggingface_hub
+
+      - name: Download Model (if model_id provided)
+        if: ${{ github.event.inputs.model_id != '' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+import os,sys
+from huggingface_hub import snapshot_download
+mid = os.environ.get('MODEL_ID','${{ github.event.inputs.model_id }}')
+if not mid:
+    print("No model_id provided, skipping download")
+    sys.exit(0)
+path = snapshot_download(repo_id=mid, cache_dir="./downloaded_model", repo_type="model", token=os.environ.get("HF_TOKEN"))
+print("Downloaded to", path)
+PY
+
+      - name: Run conversion & quantization
+        run: |
+          # make sure conversion fails loudly; produce artifacts under artifacts/
+          mkdir -p artifacts
+          # placeholder: run convert script in ./scripts/convert.py
+          python scripts/convert.py --model ./downloaded_model --out artifacts/converted.mlmodel
+
+      - name: Upload artifact (to repo or external storage)
+        uses: actions/upload-artifact@v4
+        with:
+          name: converted-model
+          path: artifacts/
+
+  build-and-deploy:
+    needs: prepare-and-convert
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download converted artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: converted-model
+          path: server/artifacts
+
+      - name: Build Docker image
+        run: |
+          docker build -t my6app:latest ./server
+
+      - name: Push to registry (example uses GitHub Packages)
+        env:
+          REGISTRY: ghcr.io
+          IMAGE_NAME: ${{ github.repository_owner }}/my6privateai
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo $GITHUB_TOKEN | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+          docker tag my6app:latest $REGISTRY/$IMAGE_NAME:latest
+          docker push $REGISTRY/$IMAGE_NAME:latest
+
+      - name: Deploy to Fly (optional)
+        if: ${{ secrets.FLY_API_TOKEN != '' }}
+        uses: superfly/flyctl-actions@master
+        with:
+          args: "deploy --image ghcr.io/${{ github.repository_owner }}/my6privateai:latest --remote-only"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
